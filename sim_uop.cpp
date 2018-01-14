@@ -1,5 +1,4 @@
 #include "pin.H"
-
 #include <stdio.h>
 #include <iostream>
 #include <fstream>
@@ -81,7 +80,7 @@ class ResStationFuncUnit{
 		std::vector<UINT32> ops_in_progress; // Number of operations in progress, per unit
 
 		UINT32  num_rs;  // Number of reservation stations shared by all FUs of this type
-		std::vector<ReservationStation *> rs_pool;  // The reservation station pool, common to all FUs of this object
+		std::list<ReservationStation *> rs_pool;  // The reservation station pool, common to all FUs of this object
 
 		// Constructor
 		ResStationFuncUnit(CPU_OPCODE_enum _fu_type,
@@ -125,10 +124,12 @@ class EventQ_Item
 		// Add any other variables you need here
 		ResStationFuncUnit *rsfu;
 		UINT32 res_station;
+		UINT32 fu_num;
 		// Constructor
 		EventQ_Item(UINT64 _dueCycle,
 			    ResStationFuncUnit *_rs_fu,
-			    UINT32 res_station
+			    UINT32 _res_station,
+			    UINT32 funum
 				// ------------------------------------------------
 				// Add any other parameters you need here
 				//  to initialize the added variables of this class
@@ -136,7 +137,8 @@ class EventQ_Item
 		{
 			dueCycle    = _dueCycle;
 			rsfu = _rs_fu;
-			res_station = res_station;
+			res_station = _res_station;
+			fu_num = funum;
 			// --------------------------------------
 			// Add code to initialize other variables
 		}
@@ -169,7 +171,7 @@ std::priority_queue<EventQ_Item *, std::vector<EventQ_Item *>, EventQ_cmp> g_eve
 // 2 - dispatch stage messages
 // 3 - execute stage messages
 // 4 - write-result stage messages
-KNOB<UINT32> Knob_verbose      (KNOB_MODE_WRITEONCE, "pintool", "verb",              "0", "enable detailed messages for debugging");
+KNOB<UINT32> Knob_verbose      (KNOB_MODE_WRITEONCE, "pintool", "verb",              "-1", "enable detailed messages for debugging");
 // Number of fast-forwarding instructions:
 KNOB<UINT64> Knob_num_ff       (KNOB_MODE_WRITEONCE, "pintool", "ffwd",              "0", "number of instructions for fast-forward simulation");
 // Number of warm-up cycles to simulate (before starting to take measurements):
@@ -211,19 +213,19 @@ KNOB<UINT32> Knob_num_fdivs (KNOB_MODE_WRITEONCE, "pintool", "num_fdivs", "1", "
 // Number of reservation stations (RS) buffers per functional unit type
 // -------------------------------------------------------
 // Number of RS for memory ports/units:
-KNOB<UINT32> Knob_num_rs_mem  (KNOB_MODE_WRITEONCE, "pintool", "num_rs_mem",  "4", "number of reservation stations for memory");
+KNOB<UINT32> Knob_num_rs_mem  (KNOB_MODE_WRITEONCE, "pintool", "num_rs_mem",  "1", "number of reservation stations for memory");
 // Number of RS for IALU units:
-KNOB<UINT32> Knob_num_rs_ialu (KNOB_MODE_WRITEONCE, "pintool", "num_rs_ialu", "4", "number of reservation stations for integer ALUs");
+KNOB<UINT32> Knob_num_rs_ialu (KNOB_MODE_WRITEONCE, "pintool", "num_rs_ialu", "1", "number of reservation stations for integer ALUs");
 // Number of RS for IMUL units:
-KNOB<UINT32> Knob_num_rs_imul (KNOB_MODE_WRITEONCE, "pintool", "num_rs_imul", "4", "number of reservation stations for integer multipliers");
+KNOB<UINT32> Knob_num_rs_imul (KNOB_MODE_WRITEONCE, "pintool", "num_rs_imul", "1", "number of reservation stations for integer multipliers");
 // Number of RS for IDIV units:
-KNOB<UINT32> Knob_num_rs_idiv (KNOB_MODE_WRITEONCE, "pintool", "num_rs_idiv", "4", "number of reservation stations for integer dividers");
+KNOB<UINT32> Knob_num_rs_idiv (KNOB_MODE_WRITEONCE, "pintool", "num_rs_idiv", "1", "number of reservation stations for integer dividers");
 // Number of RS for FP ALU units:
-KNOB<UINT32> Knob_num_rs_falu (KNOB_MODE_WRITEONCE, "pintool", "num_rs_falu", "4", "number of reservation stations for FP ALUs");
+KNOB<UINT32> Knob_num_rs_falu (KNOB_MODE_WRITEONCE, "pintool", "num_rs_falu", "1", "number of reservation stations for FP ALUs");
 // Number of RS for FP MUL units:
-KNOB<UINT32> Knob_num_rs_fmul (KNOB_MODE_WRITEONCE, "pintool", "num_rs_fmul", "4", "number of reservation stations for FP multipliers");
+KNOB<UINT32> Knob_num_rs_fmul (KNOB_MODE_WRITEONCE, "pintool", "num_rs_fmul", "1", "number of reservation stations for FP multipliers");
 // Number of RS for FP DIV units:
-KNOB<UINT32> Knob_num_rs_fdiv (KNOB_MODE_WRITEONCE, "pintool", "num_rs_fdiv", "4", "number of reservation stations for FP dividers");
+KNOB<UINT32> Knob_num_rs_fdiv (KNOB_MODE_WRITEONCE, "pintool", "num_rs_fdiv", "1", "number of reservation stations for FP dividers");
 
 // ------------------------------
 // Functional unit pipeline depth
@@ -336,7 +338,7 @@ void sim_init()
 	rs_fu[FDIV]  = new ResStationFuncUnit(FDIV, Knob_num_fdivs.Value(), Knob_num_rs_fdiv.Value(),
 			Knob_ialu_pdepth.Value(), Knob_fdiv_ivl.Value(),
 			Knob_fdiv_lat.Value());
-
+//	cout << "REG_LAST: " << REG_LAST  << endl ;
 	g_cycle = 0;
 	g_dispatch_count = 0;
 	g_is_new_cycle = false;
@@ -373,6 +375,49 @@ void print_stats()
 
 
 
+void debug_reservation_stations(){
+	cout << "########### RESERVATION STATIONS ########### " << endl; 
+	cout << "Cycle : " << g_cycle << endl; 
+	for (int i = MEMOP; i < LAST_FU; i++) {
+		cout << "Type: " << opcode2String((CPU_OPCODE_enum) i);
+		cout << endl;
+		for (std::list<ReservationStation*>::iterator it = rs_fu[i]->rs_pool.begin(); it != rs_fu[i]->rs_pool.end(); it++) {
+			ReservationStation *rs_p = *it;
+			cout << "dst: " << rs_p->dstReg << " src1: " << rs_p->src1 << " src2: " << rs_p->src2;
+			cout << endl;
+		}
+	}
+	cout << "############################################ " << endl; 
+
+	return;
+}
+
+void debug_queue(std::priority_queue<EventQ_Item *, std::vector<EventQ_Item *>, EventQ_cmp> queue) {
+		
+		cout << "########### PRIORITY QUEUE ########### " << endl;
+		cout << "Cycle : " << g_cycle << endl;
+		cout << "Queue size: " << g_eventQ.size() <<  endl ;
+
+		while (!queue.empty()){
+			EventQ_Item *ev_item;
+			ev_item = queue.top();
+			
+			cout << "Top item found: " << endl;
+					
+			ReservationStation *dres;
+			list<ReservationStation*>::iterator itPool = ev_item->rsfu->rs_pool.begin();
+			advance(itPool,ev_item->res_station);
+			dres = *(itPool);
+
+			cout << "Res Found: " << endl ; 	
+			cout << "dst: " << dres->dstReg << " src1: " << dres->src1 << " src2: " << dres->src2 << " at station: " << ev_item->res_station << " Cycle: " << ev_item->dueCycle;
+			cout << endl;
+			queue.pop();	
+		}
+		cout << "###################################### " << endl;
+		return;
+}
+
 void sim_uop (CPU_OPCODE_enum opCode,  // The instruction opcode
 		UINT32 src1,             // source register 1
 		UINT32 src2,             // source register 2
@@ -387,6 +432,7 @@ void sim_uop (CPU_OPCODE_enum opCode,  // The instruction opcode
 	}
 	bool instruction_can_dispatch;
 	do {
+		
 		instruction_can_dispatch = true;
 		/* ------------------------ This is the DISPATCH stage ----------------------- */
 		UINT32 fu_type;
@@ -394,15 +440,21 @@ void sim_uop (CPU_OPCODE_enum opCode,  // The instruction opcode
 			fu_type = MEMOP; // bundle LOAD/STORE instructions to the same functional unit (MEMOP)
 		else
 			fu_type = opCode;
+		
+		if(rs_fu[fu_type]->rs_pool.size() ==  rs_fu[fu_type]->num_rs){
+			instruction_can_dispatch = false;
+		}
+
 
 		// For debugging:
-		if (Knob_verbose.Value() >= 2) {
+		if (Knob_verbose.Value() == 1) {
 			std::cout << "At: " << g_cycle
 				<< " Dispatching instruction: " << opcode2String(opCode)
 				<< " dst:"  << REG_StringShort( (REG) dst)  << " " << dst
 				<< " src1:" << REG_StringShort( (REG) src1) << " " << src1
 				<< " src2:" << REG_StringShort( (REG) src2) << " " << src2
 				<< " src3:" << REG_StringShort( (REG) src3) << " " << src3
+				<< " Can dispatch " << instruction_can_dispatch
 				<< std::endl;
 		}
 		// --------------------------------------------------------------------------
@@ -411,11 +463,6 @@ void sim_uop (CPU_OPCODE_enum opCode,  // The instruction opcode
 		//   if it cannot dispatch, set variable instruction_can_dispatch = false
 		// --------------------------------------------------------------------------
 		// --------------------------------------------------------------------------
-
-		if(rs_fu[fu_type]->rs_pool.size() ==  rs_fu[fu_type]->num_rs){
-			instruction_can_dispatch = false;
-		}
-
 
 		// End of "can dispatch" code
 		// --------------------------------------------------------------------------
@@ -432,7 +479,13 @@ void sim_uop (CPU_OPCODE_enum opCode,  // The instruction opcode
 			// Dispatch the instruction------------------------------------------------
 			// ------------------------------------------------------------------------
 			// ------------------------------------------------------------------------
-
+			// v
+				if (Knob_verbose.Value() == 1) {
+//					cout << "----------------Before Dispatch----------------- " << endl;
+//					debug_reservation_stations();
+//					debug_queue(g_eventQ);
+				}
+		
 			ReservationStation *res = new ReservationStation(opCode,dst,NULL,NULL,NULL);
 
 			switch(opCode){
@@ -454,6 +507,7 @@ void sim_uop (CPU_OPCODE_enum opCode,  // The instruction opcode
 								res->set_src3(registerStatus[src3]);				  	
 							}
 						}
+						//cout << "STORE Instruction" << endl;
 					}
 
 				default:
@@ -473,7 +527,14 @@ void sim_uop (CPU_OPCODE_enum opCode,  // The instruction opcode
 					}
 
 			}
-
+			rs_fu[fu_type]->rs_pool.push_back(res);
+			
+			if (Knob_verbose.Value() == 0) {
+//					cout << "----------------After Dispatch----------------- " << endl;
+//					debug_reservation_stations();
+//					debug_queue(g_eventQ);
+				}
+		
 
 			// End of dispatch
 
@@ -507,7 +568,15 @@ void sim_uop (CPU_OPCODE_enum opCode,  // The instruction opcode
 			// Result forwarding works because the WriteResult stage "wakes-up" dependent instructions
 			//  which will start execution in the same cycle
 			run_WriteResult_stage();
+			if (Knob_verbose.Value() == 1) {
+//			cout << "--------Before Execute-------- " << endl;
+//			debug_queue(g_eventQ);
+			}
 			run_Execute_stage();
+			if (Knob_verbose.Value() == 1) {
+//			cout << "--------After Execute--------- " <<endl;
+//			debug_queue(g_eventQ);
+			}
 			if (g_detailedSim < (g_cycle - g_cycle_start)) { // Check for end of simulation
 				print_stats();
 				TraceFile.close();
@@ -525,8 +594,6 @@ void sim_uop (CPU_OPCODE_enum opCode,  // The instruction opcode
 	} while (!instruction_can_dispatch);
 }
 
-
-
 void run_Execute_stage()
 {
 
@@ -542,19 +609,6 @@ void run_Execute_stage()
 	for (int i = MEMOP; i < LAST_FU; i++) {  // For all types of FUs
 		for (UINT32 ii = 0; ii < rs_fu[i]->num_fus; ii++) {  // For each FU of type i
 			// For debugging:
-			if (Knob_verbose.Value() >= 3) {
-				std::cout << "At: "                  << g_cycle
-					<< " FU type: "            << opcode2String((CPU_OPCODE_enum) i) << " FU num:" << ii
-					<< " FU last initiation: " << rs_fu[i]->last_init[ii]
-					<< " Cannot initiate: "    << ((g_cycle - rs_fu[i]->last_init[ii]) < rs_fu[i]->initiation_interval)
-					<< " Pipe full: "          << ((rs_fu[i]->ops_in_progress[ii]) >= rs_fu[i]->pipe_depth)
-					<< std::endl;
-			}
-			// -----------------------------------------------------------
-			// -----------------------------------------------------------
-			// Check if this unit can execute an instruction at this cycle
-			// -----------------------------------------------------------
-			// -----------------------------------------------------------
 			execute = true;
 
 			if((g_cycle - rs_fu[i]->last_init[ii]) < rs_fu[i]->initiation_interval){
@@ -564,13 +618,29 @@ void run_Execute_stage()
 			if((rs_fu[i]->ops_in_progress[ii]) == rs_fu[i]->pipe_depth){
 				execute = false;
 			}
-
+		
+			if (Knob_verbose.Value() >= 3) {
+				std::cout << "At: "                  << g_cycle
+					<< " FU type: "            << opcode2String((CPU_OPCODE_enum) i) 
+					<< " FU num: " << ii
+					<< " FU last initiation: " << rs_fu[i]->last_init[ii]
+					<< " Cannot initiate: "    << ((g_cycle - rs_fu[i]->last_init[ii]) < rs_fu[i]->initiation_interval)
+					<< " Pipe full: "          << ((rs_fu[i]->ops_in_progress[ii]) >= rs_fu[i]->pipe_depth)
+					<< " Execute: "		   << execute
+					<< std::endl;
+			}
+			// -----------------------------------------------------------
+			// -----------------------------------------------------------
+			// Check if this unit can execute an instruction at this cycle
+			// -----------------------------------------------------------
+			// -----------------------------------------------------------
+	
 
 			// End of "unit can execute" code
 			// -----------------------------------------------------------
 			if(execute){
 				int res_from_pool = 0; // pass info to EventQ
-				for (std::vector<ReservationStation*>::iterator it = rs_fu[i]->rs_pool.begin(); it != rs_fu[i]->rs_pool.end(); it++) {
+				for (std::list<ReservationStation*>::iterator it = rs_fu[i]->rs_pool.begin(); it != rs_fu[i]->rs_pool.end(); it++) {
 				// -------------------------------------------------------------
 				// Look from oldest to newest entries in the reservation station
 				//  for instructions ready to execute
@@ -586,19 +656,20 @@ void run_Execute_stage()
 					if (Knob_verbose.Value() >= 3) {
 						std::cout << "At: " << g_cycle
 							<< " FUtype: " << opcode2String((CPU_OPCODE_enum) i) << " FUnum:" << ii
-							<< " sources: " << rs_p->src1 << ", " << rs_p->src2 << ", " << rs_p->src3
-							<< std::endl;
+							<< " sources: " << rs_p->src1 << ", " << rs_p->src2 << ", " << rs_p->src3;
 					}
 				// -----------------------------------------------------------------------------
 				// -----------------------------------------------------------------------------
 				// Write code to check for ready instructions and schedule their result due time
 				// -----------------------------------------------------------------------------
 				// -----------------------------------------------------------------------------
-				 	if(i == MEMOP && rs_p != *(rs_fu[i]->rs_pool.begin())) break;
+				 	//if(i == MEMOP && rs_p != *(rs_fu[i]->rs_pool.begin())) break;
 					if( rs_p->src1 == NULL && rs_p->src2 == NULL  && rs_p->src3 == NULL && rs_p->to_be_executed == false ){
+//						cout << "Inserted in Queue " << " Pool: " <<  res_from_pool << " fu_number: " << ii <<  endl; 
 						rs_fu[i]->ops_in_progress[ii]++;
 						rs_fu[i]->last_init[ii] = g_cycle;
-						g_eventQ.push(new EventQ_Item(g_cycle+rs_fu[i]->latency,rs_fu[i],res_from_pool));
+						g_eventQ.push(new EventQ_Item(g_cycle+rs_fu[i]->latency,rs_fu[i],res_from_pool,ii));
+					//		debug_queue(g_eventQ);
 						rs_p->to_be_executed = true;
 						break;
 					}
@@ -628,36 +699,55 @@ void run_WriteResult_stage()
 		// For debugging:
 		if (Knob_verbose.Value() >= 4) {
 			std::cout << "At: " << g_cycle
-				<< " WB: "
-				<< std::endl;
+				<< " WB: " ;
 		}
 		if( g_eventQ.empty()) break;
 
 		EventQ_Item *ev_item;
 		ev_item = g_eventQ.top();
 
-		
-		if(g_cycle >= ev_item->dueCycle) break;
-		g_eventQ.pop();
+//		cout <<  " Cycle: " << g_cycle << " Due: " << ev_item->dueCycle << endl;
+		if(g_cycle < ev_item->dueCycle){
+//			cout <<  "Not yet" << endl;
+			break;
+		}
 		ReservationStation *dres;
-		dres = ev_item->rsfu->rs_pool.at(ev_item->res_station);
-		ev_item->rsfu->rs_pool.erase(ev_item->rsfu->rs_pool.begin()+ev_item->res_station);
+
+		list<ReservationStation*>::iterator itPool = ev_item->rsfu->rs_pool.begin();
+		advance(itPool,ev_item->res_station);
+		dres = *(itPool);
+		ev_item->rsfu->ops_in_progress[ev_item->fu_num]--;
+
+		//cout << ev_item ->rsfu->fu_type << endl; 
 		for (int i = MEMOP; i < LAST_FU; i++) { 
-			for (std::vector<ReservationStation*>::iterator it = rs_fu[i]->rs_pool.begin(); it != rs_fu[i]->rs_pool.end(); it++){
+			for (std::list<ReservationStation*>::iterator it = rs_fu[i]->rs_pool.begin(); it != rs_fu[i]->rs_pool.end(); it++){
 					ReservationStation *rs_p = *it;
-					if(rs_p->src1 == dres){ cout<< "Dep" << std::endl; rs_p->src1 = NULL;}
-					if(rs_p->src2 == dres) rs_p->src2 = NULL;
-					if(rs_p->src3 == dres) rs_p->src3 = NULL;
+					if(rs_p->src1 == dres){ 
+						//cout << "Solved Dependency" << endl;  
+						rs_p->src1 = NULL; }
+					if(rs_p->src2 == dres){ 
+						//cout << "Solved Dependency" << endl; 
+						rs_p->src2 = NULL;}
+					if(rs_p->src3 == dres){ 
+						//cout << "Solved Dependency" << endl; 
+						rs_p->src3 = NULL;}
 					
 			}
 	
 		}
 		
 		for(int i=0; i< REG_LAST ; i++){
-			if( registerStatus[i] == dres ) registerStatus[i]=NULL;
+			if( registerStatus[i] == dres ){
+//				cout << "Dependency of register: " << i << endl ; 
+				registerStatus[i]=NULL;
+			}
 		}
-		free(dres);
+//		cout << "Going to delete" << endl;
+		ev_item->rsfu->rs_pool.erase(itPool);
+//		cout<< "Deleted" << endl;
+		g_eventQ.pop();
 		free(ev_item);
+		free(dres);
 		// End of result write handling
 		// -------------------------------------------------------------
 	} // endfor cdb_count
