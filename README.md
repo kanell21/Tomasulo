@@ -1,4 +1,4 @@
 Tomasulo's Algorithm
 ===================
 
-Simulation tool for out-of-order execution core without ROB and wrong path execution. 
+Simulation tool for out-of-order execution. Extra Activity for Advanced Computer Architecture Course. 
